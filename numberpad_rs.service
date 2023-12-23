@@ -1,0 +1,8 @@
+[Unit]
+Description="basic support for asus numberpad"
+
+[Service]
+ExecStart = /usr/bin/numberpad_rs
+
+[Install]
+WantedBy=multi-user.target
