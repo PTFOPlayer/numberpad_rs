@@ -1,5 +1,10 @@
 use lazy_static::lazy_static;
-use std::{fs::read_to_string, process::Command, thread::sleep, time::Duration};
+use std::{
+    fs::read_to_string,
+    process::Command,
+    thread::sleep,
+    time::{self, Duration, SystemTime},
+};
 
 use evdev::{Device, Key as evKey};
 use uinput::{self, event::keyboard::Key};
@@ -73,7 +78,7 @@ fn execute_i2c_transfer(dv_ind: &str, value: u16) {
         "0x06",
         "0x00",
         "0x07",
-        "0x00", 
+        "0x00",
         "0x0d",
         "0x14",
         "0x03",
@@ -82,11 +87,14 @@ fn execute_i2c_transfer(dv_ind: &str, value: u16) {
     ]);
 
     let out = cmd.output().expect("cannot execute i2ctransfer");
-    println!(
-        "{}:{}",
+    dbg_t(format!(
+        "{}#{}#{}#cmd:{:0x}#dv:{}",
+        out.status,
         String::from_utf8(out.stderr).unwrap(),
-        String::from_utf8(out.stdout).unwrap()
-    );
+        String::from_utf8(out.stdout).unwrap(),
+        value,
+        dv_ind
+    ));
 }
 
 fn main() {
@@ -118,7 +126,7 @@ fn main() {
         .split(" ")
         .collect::<Vec<&str>>();
 
-    println!("i2c={}, handlers={:?}", i2c, handlers);
+    dbg_t(format!("i2c={}, handlers={:?}", i2c, handlers));
 
     let mut dur = 1.0;
 
@@ -141,16 +149,18 @@ fn main() {
         .expect("uinput fail");
 
     execute_i2c_transfer(i2c, 0x60);
+    sleep(Duration::from_secs_f32(0.1));
     execute_i2c_transfer(i2c, 0x01);
+    sleep(Duration::from_secs_f32(0.1));
     execute_i2c_transfer(i2c, 0x48);
+    sleep(Duration::from_secs_f32(0.1));
     execute_i2c_transfer(i2c, 0x00);
-
+    sleep(Duration::from_secs_f32(0.1));
     loop {
         let press_state = dev.get_key_state().expect("couldn't get device keys");
         let input_state = dev.get_abs_state().expect("couldn't get device state");
         let state_x = input_state[0].value as usize;
         let state_y = input_state[1].value as usize;
-
         if press_state.contains(evKey::BTN_TOUCH) && state_y < 250 && state_x > MAX_X - 250 && !hold
         {
             state_inc += 1.0 * dur;
@@ -166,7 +176,7 @@ fn main() {
             execute_i2c_transfer(i2c, 0x48);
             state = true;
             state_inc = 0.0;
-            dur = 0.05
+            dur = 0.10
         } else if state && state_inc >= 1.9 && !hold {
             execute_i2c_transfer(i2c, 0x00);
             state = false;
@@ -205,4 +215,11 @@ fn main() {
 
         sleep(Duration::from_secs_f64(dur));
     }
+}
+
+fn dbg_t(s: String) {
+    let t = time::SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap();
+    println!("[{:?}]::{}", t, s);
 }
