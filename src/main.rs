@@ -1,101 +1,19 @@
-use lazy_static::lazy_static;
-use std::{
-    fs::read_to_string,
-    process::Command,
-    thread::sleep,
-    time::{self, Duration, SystemTime},
-};
+use std::{fs::read_to_string, thread::sleep, time::Duration};
 
 use evdev::{Device, Key as evKey};
 use uinput::{self, event::keyboard::Key};
 
-const LEFT_X_OFFSET: usize = 200;
-const TOP_Y_OFFSET: usize = 200;
-const RIGHT_X_OFFSET: usize = 200;
-const BOTTOM_Y_OFFSET: usize = 80;
-const MAX_X: usize = 3900;
-const MAX_Y: usize = 2300;
-
-const COLS: usize = 5;
-const ROWS: usize = 4;
-const COL_WIDTH: usize = (MAX_X - RIGHT_X_OFFSET - LEFT_X_OFFSET) / COLS;
-const COL_HEIGTH: usize = (MAX_Y - TOP_Y_OFFSET - BOTTOM_Y_OFFSET) / ROWS;
-
-struct KeyWrapper(bool, Key);
-
-lazy_static! {
-    static ref KEYS: [[KeyWrapper; 5]; 4] = [
-        [
-            KeyWrapper(false, Key::_7),
-            KeyWrapper(false, Key::_8),
-            KeyWrapper(false, Key::_9),
-            KeyWrapper(false, Key::Slash),
-            KeyWrapper(false, Key::BackSpace),
-        ],
-        [
-            KeyWrapper(false, Key::_4),
-            KeyWrapper(false, Key::_5),
-            KeyWrapper(false, Key::_6),
-            KeyWrapper(true, Key::_8),
-            KeyWrapper(false, Key::BackSpace),
-        ],
-        [
-            KeyWrapper(false, Key::_1),
-            KeyWrapper(false, Key::_2),
-            KeyWrapper(false, Key::_3),
-            KeyWrapper(false, Key::Minus),
-            KeyWrapper(true, Key::_5),
-        ],
-        [
-            KeyWrapper(false, Key::_0),
-            KeyWrapper(false, Key::Dot),
-            KeyWrapper(false, Key::Enter),
-            KeyWrapper(true, Key::Equal),
-            KeyWrapper(false, Key::Equal),
-        ],
-    ];
-}
-
+mod dbg;
+use dbg::dbg_t;
+mod consts;
+use consts::*;
+mod i2c;
+use i2c::*;
 // manual commands for dv_ind=1
 // sudo i2ctransfer -f -y 1 w13@0x15 0x05 0x00 0x3d 0x03 0x06 0x00 0x07 0x00 0x0d 0x14 0x03 0x60 0xad
 // sudo i2ctransfer -f -y 1 w13@0x15 0x05 0x00 0x3d 0x03 0x06 0x00 0x07 0x00 0x0d 0x14 0x03 0x01 0xad
 // sudo i2ctransfer -f -y 1 w13@0x15 0x05 0x00 0x3d 0x03 0x06 0x00 0x07 0x00 0x0d 0x14 0x03 0x48 0xad
 // sudo i2ctransfer -f -y 1 w13@0x15 0x05 0x00 0x3d 0x03 0x06 0x00 0x07 0x00 0x0d 0x14 0x03 0x00 0xad
-
-#[inline(always)]
-fn execute_i2c_transfer(dv_ind: &str, value: u16) {
-    let mut cmd = Command::new("sudo");
-    cmd.args(&[
-        "i2ctransfer",
-        "-f",
-        "-y",
-        dv_ind,
-        "w13@0x15",
-        "0x05",
-        "0x00",
-        "0x3d",
-        "0x03",
-        "0x06",
-        "0x00",
-        "0x07",
-        "0x00",
-        "0x0d",
-        "0x14",
-        "0x03",
-        &format!("{:x}", value),
-        "0xad",
-    ]);
-
-    let out = cmd.output().expect("cannot execute i2ctransfer");
-    dbg_t(format!(
-        "{}#{}#{}#cmd:{:0x}#dv:{}",
-        out.status,
-        String::from_utf8(out.stderr).unwrap(),
-        String::from_utf8(out.stdout).unwrap(),
-        value,
-        dv_ind
-    ));
-}
 
 fn main() {
     let file = read_to_string("/proc/bus/input/devices").expect("msg");
@@ -116,9 +34,12 @@ fn main() {
         .filter(|x| x.contains("i2c-"))
         .collect::<Vec<&str>>();
 
-    let i2c = sysfs_split[0]
-        .strip_prefix("i2c-")
-        .expect("couldn't parse i2c");
+    let i2c = I2C::new(
+        sysfs_split[0]
+            .strip_prefix("i2c-")
+            .expect("couldn't parse i2c")
+            .into()
+    );
 
     let handlers = devices[section + 4]
         .strip_prefix("H: Handlers=")
@@ -126,20 +47,15 @@ fn main() {
         .split(" ")
         .collect::<Vec<&str>>();
 
-    dbg_t(format!("i2c={}, handlers={:?}", i2c, handlers));
-
-    let mut dur = 1.0;
-
-    let mut state = false;
-    let mut hold = false;
-    let mut state_inc = 0.0;
-    let mut btn = false;
+    dbg_t(format!("i2c={:?}, handlers={:?}", i2c, handlers));
 
     let event = handlers.into_iter().find(|x| x.contains("event")).unwrap();
 
-    let dev = Device::open("/dev/input/".to_owned() + event).expect("couldn't find handle");
+    let dev_path = "/dev/input/".to_owned() + event;
+    dbg_t(format!("device path:{}", dev_path));
+    let dev = Device::open(dev_path).expect("couldn't find handle");
 
-    let mut udev = uinput::default()
+    let udev = uinput::default()
         .expect("uinput fail")
         .name("numberpad")
         .unwrap()
@@ -148,52 +64,140 @@ fn main() {
         .create()
         .expect("uinput fail");
 
-    execute_i2c_transfer(i2c, 0x60);
-    sleep(Duration::from_secs_f32(0.1));
-    execute_i2c_transfer(i2c, 0x01);
-    sleep(Duration::from_secs_f32(0.1));
-    execute_i2c_transfer(i2c, 0x48);
-    sleep(Duration::from_secs_f32(0.1));
-    execute_i2c_transfer(i2c, 0x00);
-    sleep(Duration::from_secs_f32(0.1));
+    i2c.init();
+
+    dbg_t("Initialization finished".to_owned());
+
+    loop_v2(dev, udev, i2c);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum TouchType {
+    Hold,
+    Normal,
+}
+
+impl TouchType {
+    pub fn is_hold(&self) -> bool {
+        self == &Self::Hold
+    }
+
+    pub fn is_normal(&self) -> bool {
+        self == &Self::Normal
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum State {
+    Normal(TouchType),
+    LeftBtn(TouchType),
+    RightBtn(TouchType),
+}
+
+impl State {
+    pub fn get_touch_type(&mut self) -> &mut TouchType {
+        match self {
+            State::Normal(touch_type) => touch_type,
+            State::LeftBtn(touch_type) => touch_type,
+            State::RightBtn(touch_type) => touch_type,
+        }
+    }
+
+    pub fn is_non_btn(&self) -> bool {
+        match self {
+            State::Normal(_) => true,
+            _ => false,
+        }
+    }
+
+    pub fn set_inner(&mut self, other_touch_type: TouchType) {
+        match self {
+            State::Normal(touch_type) => *touch_type = other_touch_type,
+            State::LeftBtn(touch_type) => *touch_type = other_touch_type,
+            State::RightBtn(touch_type) => *touch_type = other_touch_type,
+        }
+    }
+}
+
+struct Position {
+    x: usize,
+    y: usize,
+}
+
+impl Position {
+    fn new(x: usize, y: usize) -> Self {
+        Self { x, y }
+    }
+
+    fn check_rbtn(&self) -> bool {
+        self.y < 250 && self.x > MAX_X - 250
+    }
+
+    fn check_lbtn(&self) -> bool {
+        self.y < 250 && self.x < 250
+    }
+
+    fn in_bounds(&self) -> bool {
+        self.x > LEFT_X_OFFSET
+            && self.x < MAX_X - RIGHT_X_OFFSET
+            && self.y > TOP_Y_OFFSET
+            && self.y < MAX_Y - BOTTOM_Y_OFFSET
+    }
+}
+
+fn loop_v2(dev: Device, mut udev: uinput::Device, i2c: I2C) {
+    let mut state = State::Normal(TouchType::Normal);
+    let mut is_on = false;
+
+    let mut state_inc = 0.0;
+    let mut dur = 1.0;
+
     loop {
         let press_state = dev.get_key_state().expect("couldn't get device keys");
-        let input_state = dev.get_abs_state().expect("couldn't get device state");
-        let state_x = input_state[0].value as usize;
-        let state_y = input_state[1].value as usize;
-        if press_state.contains(evKey::BTN_TOUCH) && state_y < 250 && state_x > MAX_X - 250 && !hold
+        let input = dev.get_abs_state().expect("couldn't get device state");
+        let position = Position::new(input[0].value as usize, input[1].value as usize);
+
+        if press_state.contains(evKey::BTN_TOUCH)
+            && state.get_touch_type().is_normal()
+            && position.check_rbtn()
         {
+            state = State::RightBtn(TouchType::Normal);
+
             state_inc += 1.0 * dur;
-            btn = true;
+        } else if press_state.contains(evKey::BTN_TOUCH)
+            && state.get_touch_type().is_normal()
+            && position.check_lbtn()
+        {
+            state = State::LeftBtn(TouchType::Normal);
+
+            state_inc += 1.0 * dur;
         } else {
+            state = State::Normal(TouchType::Normal);
             state_inc = 0.0;
-            btn = false;
         }
 
-        if !state && state_inc >= 1.9 && !hold {
-            execute_i2c_transfer(i2c, 0x60);
-            execute_i2c_transfer(i2c, 0x01);
-            execute_i2c_transfer(i2c, 0x48);
-            state = true;
+        if !is_on && state_inc >= 1.9 && state.get_touch_type().is_normal() {
+            i2c.on();
+            
+            
+            
+            is_on = true;
             state_inc = 0.0;
             dur = 0.10
-        } else if state && state_inc >= 1.9 && !hold {
-            execute_i2c_transfer(i2c, 0x00);
-            state = false;
+        } else if is_on && state_inc >= 1.9 && state.get_touch_type().is_normal() {
+            i2c.off();
+            is_on = false;
             state_inc = 0.0;
             dur = 1.0
         }
 
-        if state_x > LEFT_X_OFFSET
-            && state_x < MAX_X - RIGHT_X_OFFSET
-            && state_y > TOP_Y_OFFSET
-            && state_y < MAX_Y - BOTTOM_Y_OFFSET
-            && state
+        if position.in_bounds()
+            && is_on
             && press_state.contains(evKey::BTN_TOUCH)
-            && !hold
+            && !state.get_touch_type().is_hold()
         {
-            let key_x = (state_x - LEFT_X_OFFSET) / COL_WIDTH;
-            let key_y = (state_y - TOP_Y_OFFSET) / COL_HEIGTH;
+            let key_x = (position.x - LEFT_X_OFFSET) / COL_WIDTH;
+            let key_y = (position.y - TOP_Y_OFFSET) / COL_HEIGTH;
             if key_x <= 4 && key_y <= 3 {
                 if !KEYS[key_y][key_x].0 {
                     udev.click(&KEYS[key_y][key_x].1).expect("key error");
@@ -207,19 +211,12 @@ fn main() {
             }
         }
 
-        if press_state.contains(evKey::BTN_TOUCH) && !btn {
-            hold = true;
+        if press_state.contains(evKey::BTN_TOUCH) && state.is_non_btn() {
+            state.set_inner(TouchType::Hold)
         } else {
-            hold = false;
+            state.set_inner(TouchType::Normal)
         }
 
         sleep(Duration::from_secs_f64(dur));
     }
-}
-
-fn dbg_t(s: String) {
-    let t = time::SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap();
-    println!("[{:?}]::{}", t, s);
 }
