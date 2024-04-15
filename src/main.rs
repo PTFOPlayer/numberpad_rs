@@ -1,4 +1,4 @@
-use std::{fs::read_to_string, thread::sleep, time::Duration};
+use std::{fs::read_to_string, process::exit, thread::sleep, time::Duration};
 
 use evdev::{Device, Key as evKey};
 use uinput::{self, event::keyboard::Key};
@@ -16,6 +16,16 @@ use i2c::*;
 // sudo i2ctransfer -f -y 1 w13@0x15 0x05 0x00 0x3d 0x03 0x06 0x00 0x07 0x00 0x0d 0x14 0x03 0x00 0xad
 
 fn main() {
+    if sudo::check() != sudo::RunningAs::Root {
+        match sudo::escalate_if_needed() {
+            Ok(_) => {}
+            Err(_) => {
+                println!("Root required");
+                exit(1);
+            }
+        }
+    }
+
     let file = read_to_string("/proc/bus/input/devices").expect("msg");
 
     let splitted = file.split('\n');
@@ -34,11 +44,11 @@ fn main() {
         .filter(|x| x.contains("i2c-"))
         .collect::<Vec<&str>>();
 
-    let i2c = I2C::new(
+    let mut i2c = I2C::new(
         sysfs_split[0]
             .strip_prefix("i2c-")
             .expect("couldn't parse i2c")
-            .into()
+            .into(),
     );
 
     let handlers = devices[section + 4]
@@ -68,7 +78,7 @@ fn main() {
 
     dbg_t("Initialization finished".to_owned());
 
-    loop_v2(dev, udev, i2c);
+    drive_loop(dev, udev, i2c);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -145,7 +155,7 @@ impl Position {
     }
 }
 
-fn loop_v2(dev: Device, mut udev: uinput::Device, i2c: I2C) {
+fn drive_loop(dev: Device, mut udev: uinput::Device, mut i2c: I2C) {
     let mut state = State::Normal(TouchType::Normal);
     let mut is_on = false;
 
@@ -178,9 +188,6 @@ fn loop_v2(dev: Device, mut udev: uinput::Device, i2c: I2C) {
 
         if !is_on && state_inc >= 1.9 && state.get_touch_type().is_normal() {
             i2c.on();
-            
-            
-            
             is_on = true;
             state_inc = 0.0;
             dur = 0.10

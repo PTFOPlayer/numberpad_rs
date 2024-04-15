@@ -7,5 +7,7 @@ edition = "2021"
 
 [dependencies]
 evdev = "0.12.1"
+i2cdev = "0.6.0"
 lazy_static = "1.4.0"
+sudo = "0.6.0"
 uinput = "0.1.3"
